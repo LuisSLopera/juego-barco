@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Barco en la Oscuridad — Vanilla JS (v5)</title>
+<style>
+  :root{
+    --bg:#07121c;
+    --text:#e5e7eb;
+    --boat:#2dd4bf;      /* barco cian */
+    --boat-stroke:#0ea5a7;
+    --bullet:#ffffff;    /* bala blanca */
+    --obj:#bfbfbf;       /* señuelos/objetivo (con luz) */
+    --obj-stroke:#6b7280;
+    --dot:#9ca3af;       /* puntos en oscuridad */
+    --target:#fbbf24;    /* dorado para resaltar objetivo SOLO con luz */
+    --overlay:#000000f0; /* overlay fin de juego */
+    --accent:#22d3ee;    /* acento botones */
+  }
+  html,body{ margin:0; height:100%; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial; overflow:hidden; }
+  #game{ display:block; width:100vw; height:100vh; background:radial-gradient(1100px 800px at 40% 20%, #0b314d 0%, #061e2f 100%); cursor:crosshair; }
+  .hud{ position:fixed; left:12px; top:12px; z-index:5; background:#0b1220cc; backdrop-filter: blur(6px); border:1px solid #1f2937; border-radius:12px; padding:10px 12px; font-size:.92rem; }
+  .hud kbd{ background:#111827; border:1px solid #374151; border-bottom-color:#1f2937; padding:.1rem .35rem; border-radius:6px; font-weight:600; font-size:.85em; }
+  .status{ margin-top:6px; font-size:.85rem; opacity:.9; }
+  .console{ position:fixed; left:50%; bottom:18px; transform:translateX(-50%); width:min(720px,92vw); z-index:6; display:flex; gap:8px; background:#0b1220ee; backdrop-filter: blur(6px); border:1px solid #1f2937; border-radius:12px; padding:10px 12px; }
+  .console.hidden{ display:none; }
+  .console input{ flex:1; background:#0b1220; color:var(--text); border:1px solid #374151; border-radius:10px; padding:12px 12px; outline:none; font-size:1rem; }
+  .console .hint{ font-size:.9rem; opacity:.8; align-self:center; white-space:nowrap; }
+  .overlay{ position:fixed; inset:0; background:var(--overlay); display:flex; align-items:center; justify-content:center; z-index:10; }
+  .overlay.hidden{ display:none; }
+  .modal{ text-align:center; max-width:min(90vw,700px); background:#0b1220; border:1px solid #1f2937; border-radius:16px; box-shadow:0 10px 40px #0009; padding:26px 24px; }
+  .modal h1{ margin:0 0 6px 0; font-size:clamp(1.6rem,2.7vw,2.2rem); }
+  .modal p{ margin:.4rem 0 1rem 0; opacity:.9; }
+  .modal .btn{ display:inline-block; margin-top:4px; padding:10px 16px; border-radius:10px; border:1px solid #164e63; background:#05222b; color:var(--accent); font-weight:700; cursor:pointer; }
+  .toast{ position:fixed; top:12px; right:12px; z-index:7; background:#0b1220cc; border:1px solid #1f2937; border-radius:10px; padding:8px 10px; font-size:.9rem; }
+  .topbar{ position:fixed; left:0; right:0; top:0; height:40px; display:flex; align-items:center; justify-content:space-between; padding:0 12px; font-size:14px; color:#E5E7EB; background:rgba(0,0,0,.35); z-index:4; }
+  .chip{ padding:2px 8px; border-radius:999px; background:#0b1220aa; border:1px solid #1f2937; margin-right:6px; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Juego de barco en la oscuridad"></canvas>
+<div class="topbar" aria-hidden="true">
+  <div>
+    <span class="chip">Regla: NO dispares al objetivo</span>
+    <span class="chip">Objetivo visible SOLO con luz</span>
+    <span class="chip">Ganas SOLO con luz</span>
+  </div>
+  <div id="lightChip" class="chip">Luz: off</div>
+</div>
+<div class="hud" id="hud">
+  <div><strong>Objetivo:</strong> llega al objetivo (¡no le dispares!). Con luz encendida el objetivo se distingue del resto.</div>
+  <div style="margin-top:6px">
+    Mover: <kbd>W</kbd>/<kbd>A</kbd>/<kbd>S</kbd>/<kbd>D</kbd> o <kbd>←</kbd><kbd>↑</kbd><kbd>→</kbd><kbd>↓</kbd>
+    · <kbd>Espacio</kbd> disparar · <kbd>Enter</kbd> consola · <kbd>H</kbd> mostrar/ocultar ayudas · <kbd>R</kbd> reiniciar
+  </div>
+  <div class="status" id="status">Regla: <strong>solo ganas con la luz encendida</strong>. Si alcanzas el objetivo en oscuridad el juego continúa (no ganas ni pierdes). Comandos: <code>luz</code> (permanente), <code>osc</code> (oscurecer), <code>reiniciar</code>.</div>
+</div>
+<div class="console hidden" id="console"><input id="cmd" type="text" placeholder="luz · osc · reiniciar (Enter para enviar, Esc para cerrar)" spellcheck="false" /><div class="hint">Presiona <kbd>Esc</kbd> para cerrar sin enviar</div></div>
+<div class="toast" id="toast" style="display:none;"></div>
+<div class="overlay hidden" id="overlay" role="dialog" aria-modal="true"><div class="modal"><h1 id="final-title">¡Fin!</h1><p id="final-subtitle">Texto</p><button class="btn" id="btn-restart" aria-label="Reiniciar juego (R)">Reiniciar (R)</button></div></div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const statusEl = document.getElementById('status');
+  const overlay = document.getElementById('overlay');
+  const finalTitle = document.getElementById('final-title');
+  const finalSubtitle = document.getElementById('final-subtitle');
+  const btnRestart = document.getElementById('btn-restart');
+  const consoleBox = document.getElementById('console');
+  const cmdInput = document.getElementById('cmd');
+  const toast = document.getElementById('toast');
+  const lightChip = document.getElementById('lightChip');
+  const hud = document.getElementById('hud');
+  const topbar = document.querySelector('.topbar');
+
+  // ===== Canvas HiDPI =====
+  function fitCanvas(){
+    const dpr = Math.min(window.devicePixelRatio||1, 2);
+    const w = window.innerWidth, h = window.innerHeight;
+    canvas.width = Math.floor(w*dpr); canvas.height = Math.floor(h*dpr);
+    canvas.style.width = w+'px'; canvas.style.height = h+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener('resize', fitCanvas); fitCanvas();
+
+  // ===== Utils =====
+  const rand = (a,b)=> Math.random()*(b-a)+a;
+  const clamp = (v,mi,ma)=> Math.max(mi, Math.min(ma,v));
+  const dist = (ax,ay,bx,by)=> Math.hypot(ax-bx, ay-by);
+
+  // ===== Game State =====
+  const boat = { x: Math.max(120, window.innerWidth*0.15), y: window.innerHeight*0.5, r: 16, vx:0, vy:0, angle:0 };
+  let bullets = []; // {x,y,vx,vy,life}
+  let items = [];   // {x,y,r,alive,id,rot}
+  let goalId = 0;
+  let running = true;
+  let status = 'playing'; // 'playing' | 'win' | 'lose'
+
+  // Movement tuning
+  const ACCEL = 380;         // px/s^2
+  const MAX_SPEED = 440;     // px/s
+  const FRICTION_FRAME = 0.98; // fricción base (ajustada a dt)
+
+  // Luz
+  let lightsAlwaysOn = false;
+  let lightsOnUntil = 0; // timestamp ms
+  const nowLight = ()=> lightsAlwaysOn || performance.now() < lightsOnUntil;
+
+  // ===== Ayudas ocultas por defecto; H para alternar =====
+  let helpVisible = false;
+  hud.style.display = 'none';
+  topbar.style.display = 'none';
+  function toggleHelp(){
+    helpVisible = !helpVisible;
+    hud.style.display = helpVisible ? '' : 'none';
+    topbar.style.display = helpVisible ? '' : 'none';
+  }
+
+  // ===== Input =====
+  const keys = Object.create(null);
+  function clearKeys(){ for (const k in keys) keys[k] = false; }
+  // Limpia teclas si la ventana pierde foco o se oculta
+  window.addEventListener('blur', clearKeys);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) clearKeys(); });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key.toLowerCase() === 'h' && consoleBox.classList.contains('hidden')){ e.preventDefault(); toggleHelp(); return; }
+    if (e.key === 'Enter' && consoleBox.classList.contains('hidden') && status==='playing'){ e.preventDefault(); toggleConsole(true); return; }
+    if (!consoleBox.classList.contains('hidden')) return; // no mover si consola abierta
+
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+    if (status !== 'playing'){ if (e.key.toLowerCase()==='r') restart(); return; }
+    keys[e.key.toLowerCase()] = true;
+    if (e.code === 'Space') shoot();
+  });
+  window.addEventListener('keyup', (e) => { if (status !== 'playing') return; keys[e.key.toLowerCase()] = false; });
+
+  function toggleConsole(open){
+    if (status !== 'playing') return;
+    if (open){ consoleBox.classList.remove('hidden'); cmdInput.value=''; cmdInput.focus(); running=false; }
+    else { consoleBox.classList.add('hidden'); canvas.focus(); running=true; clearKeys(); }
+  }
+  cmdInput.addEventListener('keydown', (e)=>{
+    if (e.key==='Escape'){ e.preventDefault(); toggleConsole(false); return; }
+    if (e.key==='Enter'){
+      e.preventDefault();
+      const v = cmdInput.value.trim().toLowerCase();
+      if (!v){ toggleConsole(false); return; }
+      handleCommand(v);
+      toggleConsole(false);
+    }
+  });
+
+  function showToast(msg,ms=1600){ toast.textContent=msg; toast.style.display='block'; clearTimeout(showToast._t); showToast._t=setTimeout(()=>toast.style.display='none',ms); }
+
+  function handleCommand(v){
+    if (status !== 'playing') return;
+    const now = performance.now();
+    if (v==='luz'){
+      // LUZ PERMANENTE (se eliminó comando "iluminar")
+      lightsAlwaysOn = true; lightsOnUntil = now + 3600_000; // seguridad
+      statusEl.textContent = 'Luz PERMANENTE activada. El objetivo se distingue claramente.';
+      lightChip.textContent = 'Luz: perm';
+      showToast('Luz: permanente ON');
+    } else if (v==='osc' || v==='oscurecer'){
+      lightsAlwaysOn = false; lightsOnUntil = 0; lightChip.textContent = 'Luz: off';
+      statusEl.textContent = 'Oscuridad activada. Solo ves ventana y puntos tenues.';
+      showToast('Oscuridad: ON');
+    } else if (v==='reiniciar'){
+      restart(); showToast('Mundo reiniciado');
+    } else { showToast('Comando no reconocido'); }
+  }
+
+  function restart(){
+    boat.x = Math.max(120, window.innerWidth*0.15); boat.y = window.innerHeight*0.5; boat.vx=0; boat.vy=0; boat.angle=0;
+    bullets.length = 0; items.length = 0;
+    const count = 34, pad = 80;
+    for (let i=0;i<count;i++){
+      const x = rand(pad, window.innerWidth - pad), y = rand(pad, window.innerHeight - pad);
+      if (dist(x,y,boat.x,boat.y) < 180){ i--; continue; }
+      items.push({ x, y, r: 16, alive:true, id:i, rot: rand(0, Math.PI*2) });
+    }
+    goalId = Math.floor(Math.random()*items.length);
+    running = true; status='playing';
+    lightsAlwaysOn = false; lightsOnUntil = 0; lightChip.textContent = 'Luz: off';
+    overlay.classList.add('hidden');
+    clearKeys(); // evita que queden teclas activas tras reinicio
+  }
+
+  function shoot(){
+    if (status !== 'playing') return;
+    const speed = 360; // px/s
+    let dirX = boat.vx, dirY = boat.vy; if (Math.hypot(dirX,dirY) < 0.01){ dirX=1; dirY=0; }
+    const mag = Math.hypot(dirX,dirY) || 1; dirX/=mag; dirY/=mag;
+    bullets.push({ x: boat.x + dirX*(boat.r+8), y: boat.y + dirY*(boat.r+8), vx: dirX*speed, vy: dirY*speed, life: 1.2 }); // life en segundos
+  }
+
+  function endGame(win, msg){
+    if (status !== 'playing') return;
+    status = win ? 'win' : 'lose'; running = false;
+    clearKeys(); // evita quedarse con teclas presionadas al mostrar overlay
+    finalTitle.textContent = win ? '🎉 ¡GANASTE!' : '💥 ¡PERDISTE!';
+    finalSubtitle.textContent = msg + ' Presiona R o el botón para reiniciar.';
+    overlay.classList.remove('hidden'); btnRestart.focus();
+  }
+
+  btnRestart.addEventListener('click', ()=> restart());
+  window.addEventListener('keydown', (e)=>{ if (e.key.toLowerCase()==='r') restart(); });
+
+  // ===== Loop =====
+  let last = performance.now();
+  function loop(now){ const dt = Math.min(0.05, (now - last)/1000); last = now; update(dt); draw(now); requestAnimationFrame(loop); }
+  requestAnimationFrame(loop);
+
+  function update(dt){
+    if (!running || status !== 'playing') return;
+
+    // Movimiento (top-down)
+    const left = keys['arrowleft'] || keys['a'];
+    const right= keys['arrowright']|| keys['d'];
+    const up   = keys['arrowup']   || keys['w'];
+    const down = keys['arrowdown'] || keys['s'];
+
+    let ax = 0, ay = 0;
+    if (left) ax -= ACCEL; if (right) ax += ACCEL; if (up) ay -= ACCEL; if (down) ay += ACCEL;
+    boat.vx += ax * dt; boat.vy += ay * dt;
+
+    // Fricción frame-rate independiente
+    const fr = Math.pow(FRICTION_FRAME, dt*60);
+    boat.vx *= fr; boat.vy *= fr;
+
+    // Limitar velocidad máxima
+    const sp = Math.hypot(boat.vx, boat.vy);
+    if (sp > MAX_SPEED){ const k = MAX_SPEED / sp; boat.vx *= k; boat.vy *= k; }
+
+    // Avanzar
+    boat.x = clamp(boat.x + boat.vx * dt, boat.r, window.innerWidth - boat.r);
+    boat.y = clamp(boat.y + boat.vy * dt, boat.r, window.innerHeight - boat.r);
+
+    // Orientación del barco hacia la velocidad
+    if (sp > 1){ const target = Math.atan2(boat.vy, boat.vx); const da = ((target - boat.angle + Math.PI*3) % (Math.PI*2)) - Math.PI; boat.angle += da * 0.18; }
+
+    // Balas
+    bullets = bullets.filter(b => (b.life -= dt) > 0 && b.x>=-20 && b.y>=-20 && b.x<=window.innerWidth+20 && b.y<=window.innerHeight+20);
+    for (const b of bullets){ b.x += b.vx*dt; b.y += b.vy*dt; }
+
+    // Colisiones bala-objeto
+    outer: for (const b of bullets){
+      for (const it of items){ if (!it.alive) continue; if (dist(b.x,b.y,it.x,it.y) < it.r + 3){ if (it.id === goalId){ endGame(false, 'Disparaste al objetivo real.'); } else { it.alive = false; } b.life = 0; break outer; } }
+    }
+
+    // Victoria: SOLO si hay luz encendida y tocas el objetivo
+    const goal = items.find(it=> it.id===goalId && it.alive);
+    if (goal && nowLight() && dist(boat.x,boat.y,goal.x,goal.y) < boat.r + goal.r){
+      endGame(true, 'Llegaste al objetivo con la luz encendida. ¡Bien hecho!');
+    }
+  }
+
+  function draw(now){
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.clearRect(0,0,w,h);
+
+    const hasLight = nowLight();
+
+    if (hasLight){
+      // Con luz: dibujar señuelos como barcos (distintos al del usuario) y objetivo como círculo + anillo dorado
+      const goal = items.find(it=> it.id===goalId && it.alive);
+      for (const it of items){
+        if (!it.alive) continue;
+        if (goal && it.id === goal.id){
+          // Objetivo: círculo visible
+          ctx.fillStyle = getCSS('--obj'); ctx.strokeStyle = getCSS('--obj-stroke'); ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(it.x, it.y, it.r, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+        } else {
+          // Señuelos: barco NPC diferente al jugador
+          drawNPCShip(it.x, it.y, it.r, it.rot);
+        }
+      }
+      // Anillo dorado del objetivo
+      if (goal){
+        const pulse = 0.5 + Math.sin(now*0.008)*0.5;
+        ctx.save();
+        ctx.lineWidth = 3 + pulse*2;
+        ctx.strokeStyle = getCSS('--target');
+        ctx.shadowColor = getCSS('--target');
+        ctx.shadowBlur = 12 + pulse*10;
+        ctx.beginPath(); ctx.arc(goal.x, goal.y, goal.r + 6 + pulse*3, 0, Math.PI*2); ctx.stroke();
+        ctx.restore();
+      }
+    } else {
+      // Oscuridad base
+      ctx.fillStyle = 'rgba(0,0,0,0.92)';
+      ctx.fillRect(0,0,w,h);
+      // Ventana circular alrededor del barco
+      const g = ctx.createRadialGradient(boat.x, boat.y, 12, boat.x, boat.y, 170);
+      g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,1)');
+      ctx.globalCompositeOperation = 'destination-out';
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(boat.x, boat.y, 170, 0, Math.PI*2); ctx.fill();
+      ctx.globalCompositeOperation = 'source-over';
+
+      // Puntos tenues (todos indistinguibles, incluyendo el objetivo)
+      ctx.fillStyle = getCSS('--dot'); ctx.globalAlpha = 0.75;
+      for (const it of items){ if (!it.alive) continue; ctx.beginPath(); ctx.arc(it.x, it.y, 3, 0, Math.PI*2); ctx.fill(); }
+      ctx.globalAlpha = 1;
+    }
+
+    // Barco jugador
+    drawBoat(boat.x, boat.y, boat.angle, boat.r);
+
+    // Balas visibles siempre
+    drawBullets();
+
+    // Silueta extra en oscuridad
+    if (!hasLight) drawBoatSilhouette(boat.x, boat.y, boat.angle, boat.r);
+
+    // Chip de luz
+    lightChip.textContent = 'Luz: ' + (hasLight ? 'perm' : 'off');
+  }
+
+  function drawBoat(x,y,ang,r){
+    ctx.save(); ctx.translate(x,y); ctx.rotate(ang);
+    ctx.fillStyle = getCSS('--boat'); ctx.strokeStyle = getCSS('--boat-stroke'); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(r + 8, 0); ctx.lineTo(0, -r*1.15); ctx.lineTo(-r, -r*0.7); ctx.lineTo(-r-8,0); ctx.lineTo(-r, r*0.7); ctx.lineTo(0, r*1.15); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#083344'; ctx.fillRect(-r*0.45, -r*0.4, r*0.9, r*0.8);
+    ctx.fillStyle = '#faf089'; ctx.beginPath(); ctx.arc(r+6, 0, 2.6, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+  function drawNPCShip(x,y,r,rot){
+    // Barco NPC gris, forma diferente (cuerpo rectangular + proa en rombo), sin parecerse al jugador
+    ctx.save(); ctx.translate(x,y); ctx.rotate(rot||0);
+    ctx.fillStyle = getCSS('--obj'); ctx.strokeStyle = getCSS('--obj-stroke'); ctx.lineWidth = 2;
+    const w = r*2.2, h = r*1.2;
+    // casco
+    ctx.beginPath();
+    ctx.moveTo(w*0.5, 0);
+    ctx.lineTo(w*0.15, -h*0.9);
+    ctx.lineTo(-w*0.5, -h*0.5);
+    ctx.lineTo(-w*0.5,  h*0.5);
+    ctx.lineTo(w*0.15,  h*0.9);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    // superestructura
+    ctx.fillStyle = '#9aa3ad';
+    ctx.fillRect(-w*0.15, -h*0.35, w*0.3, h*0.7);
+    ctx.restore();
+  }
+  function drawBoatSilhouette(x,y,ang,r){
+    ctx.save(); ctx.translate(x,y); ctx.rotate(ang); ctx.globalAlpha = 0.9; ctx.strokeStyle = getCSS('--boat'); ctx.lineWidth = 2.2; ctx.beginPath(); ctx.moveTo(r + 8, 0); ctx.lineTo(0, -r*1.15); ctx.lineTo(-r, -r*0.7); ctx.lineTo(-r-8,0); ctx.lineTo(-r, r*0.7); ctx.lineTo(0, r*1.15); ctx.closePath(); ctx.stroke(); ctx.globalAlpha = 1; ctx.restore();
+  }
+  function drawBullets(){
+    ctx.save();
+    for (const b of bullets){
+      const len = 14; const ang = Math.atan2(b.vy, b.vx);
+      const tx = b.x - Math.cos(ang)*len, ty = b.y - Math.sin(ang)*len;
+      ctx.strokeStyle = getCSS('--bullet'); ctx.lineWidth = 2; ctx.globalAlpha = .95;
+      ctx.beginPath(); ctx.moveTo(tx,ty); ctx.lineTo(b.x,b.y); ctx.stroke();
+      ctx.globalAlpha=1; ctx.fillStyle=getCSS('--bullet'); ctx.beginPath(); ctx.arc(b.x,b.y,3.2,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  const getCSS = (varName)=> getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+
+  // ===== Start =====
+  restart();
+})();
+</script>
+</body>
+</html>
